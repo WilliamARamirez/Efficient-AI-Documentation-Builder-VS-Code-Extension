@@ -1,0 +1,26 @@
+{
+  "name": "codebase-docs",
+  "version": "0.1.0",
+  "description": "Intelligent documentation system using Merkle trees and LLMs",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev -w @codebase-docs/cli",
+    "cli": "npm run cli -w @codebase-docs/cli"
+  },
+  "keywords": [
+    "documentation",
+    "llm",
+    "merkle-tree",
+    "code-analysis"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  }
+}
