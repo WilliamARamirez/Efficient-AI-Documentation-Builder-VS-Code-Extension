@@ -10,7 +10,7 @@ export class AnthropicProvider {
 
   constructor(
     apiKey: string,
-    model: string = 'claude-sonnet-4-20250514',
+    model: string = 'claude-3-5-haiku-20241022',
     maxTokens: number = 4000,
     temperature: number = 0.3
   ) {

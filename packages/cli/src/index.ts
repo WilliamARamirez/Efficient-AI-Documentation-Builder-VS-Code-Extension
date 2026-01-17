@@ -6,9 +6,10 @@ import chalk from 'chalk';
 import { initCommand } from './commands/init.js';
 import { updateCommand } from './commands/update.js';
 import { statusCommand } from './commands/status.js';
+import { installHookCommand } from './commands/install-hook.js';
 
-// Load environment variables from .env file
-dotenv.config();
+// Load environment variables from .env file (silently)
+dotenv.config({ debug: false });
 
 const program = new Command();
 
@@ -46,9 +47,23 @@ program
   .command('update')
   .description('Update documentation for changed files')
   .option('-f, --force', 'Force regenerate all documentation')
+  .option('-q, --quiet', 'Minimal output (for git hooks)')
   .action(async (options) => {
     try {
       await updateCommand(options);
+    } catch (error) {
+      console.error(chalk.red(`Error: ${error}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('install-hook')
+  .description('Install git post-commit hook for automatic doc updates')
+  .option('-f, --force', 'Overwrite existing hook')
+  .action(async (options) => {
+    try {
+      await installHookCommand(options);
     } catch (error) {
       console.error(chalk.red(`Error: ${error}`));
       process.exit(1);

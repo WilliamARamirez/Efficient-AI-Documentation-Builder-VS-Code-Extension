@@ -153,9 +153,9 @@ export function calculateStats(tree: Record<string, MerkleNode>): Manifest['stat
     }
   }
 
-  // Claude Sonnet 4: $3/M input, $15/M output
+  // Claude 3.5 Haiku: $1/M input, $5/M output
   // Rough estimate: assume 50/50 input/output ratio
-  totalCost = (totalTokensUsed / 1_000_000) * 9; // Average of $3 and $15
+  totalCost = (totalTokensUsed / 1_000_000) * 3; // Average of $1 and $5
 
   return {
     totalFiles,

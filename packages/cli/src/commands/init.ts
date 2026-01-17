@@ -47,6 +47,8 @@ export async function initCommand(options: { force?: boolean } = {}) {
   console.log('Next steps:');
   console.log(chalk.cyan('  1. Create a .env file and add your ANTHROPIC_API_KEY'));
   console.log(chalk.gray('     (Copy .env.example from the project root as a template)'));
-  console.log(chalk.cyan('  2. Run `codebase-docs update` to generate documentation'));
-  console.log(chalk.cyan('  3. Check .docs/manifest.json for results\n'));
+  console.log(chalk.cyan('  2. Install git hook (recommended): `codebase-docs install-hook`'));
+  console.log(chalk.gray('     This auto-updates docs after each commit'));
+  console.log(chalk.cyan('  3. Or run manually: `codebase-docs update`'));
+  console.log(chalk.cyan('  4. Check .docs/manifest.json for results\n'));
 }

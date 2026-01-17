@@ -181,7 +181,7 @@ Create a `.codedocs.json` file in your project root:
 
   "llm": {
     "provider": "anthropic",
-    "model": "claude-sonnet-4-20250514",
+    "model": "claude-3-5-haiku-20241022",
     "maxTokens": 4000,
     "temperature": 0.3
   },
@@ -201,6 +201,45 @@ Create a `.codedocs.json` file in your project root:
 ```
 
 **Note:** Do NOT put your API key in `.codedocs.json`. Use a `.env` file instead (see setup instructions above).
+
+## VS Code Extension (Phase 2)
+
+View documentation directly in your IDE while browsing and editing code.
+
+### Features
+
+- **📚 Documentation Sidebar**: Browse all documented files in a tree view
+- **📖 Quick Documentation Panel**: View full documentation side-by-side with code
+- **⌨️ Keyboard Shortcut**: Open docs with `Ctrl+Shift+D` (or `Cmd+Shift+D` on Mac)
+- **🔄 Auto-Refresh**: Automatically reload when documentation is updated
+- **🔁 CLI Integration**: Run updates from the IDE terminal
+
+### Getting Started
+
+1. **Build the extension**:
+```bash
+cd packages/vscode-extension
+npm install
+npm run build
+```
+
+2. **Launch in VS Code**:
+```bash
+code --extensionDevelopmentPath=packages/vscode-extension /path/to/your/project
+```
+
+3. **View documentation**:
+   - Look for "Documentation" in the Explorer sidebar
+   - Click any file to view its documentation
+   - Press `Ctrl+Shift+D` to show docs for the current file
+
+### Commands
+
+- **Show Documentation** (`Ctrl+Shift+D`): View docs for the file you're editing
+- **Refresh Documentation**: Run `codebase-docs update` from IDE
+- **Show in Sidebar**: Reveal current file in documentation tree
+
+For detailed instructions, see [VS Code Extension README](packages/vscode-extension/README.md).
 
 ## Example Output
 
@@ -262,15 +301,17 @@ Statistics:
 
 ## Cost Analysis
 
-Using Claude Sonnet 4 ($3/M input, $15/M output):
+Using Claude 3.5 Haiku ($1/M input, $5/M output):
 
 | Project Size | Initial Cost | Weekly Updates* | Monthly Cost |
 |--------------|--------------|-----------------|--------------|
-| Small (50 files) | $0.80 | $0.08 | $0.32 |
-| Medium (200 files) | $3.20 | $0.32 | $1.28 |
-| Large (1000 files) | $16.00 | $1.60 | $6.40 |
+| Small (50 files) | $0.27 | $0.03 | $0.11 |
+| Medium (200 files) | $1.07 | $0.11 | $0.43 |
+| Large (1000 files) | $5.33 | $0.53 | $2.13 |
 
 *Assumes 5% of files change per week
+
+**Note:** Haiku is 3x cheaper than Sonnet 4 while still providing excellent documentation quality. You can switch to a more powerful model in `.codedocs.json` if needed.
 
 ## Manifest Structure
 
@@ -294,7 +335,7 @@ The `.docs/manifest.json` file contains:
           "content": "Detailed technical summary...",
           "hash": "summary_hash",
           "tokens": 450,
-          "model": "claude-sonnet-4",
+          "model": "claude-3-5-haiku-20241022",
           "generatedAt": "2025-01-16T15:30:00Z"
         },
         "product": {

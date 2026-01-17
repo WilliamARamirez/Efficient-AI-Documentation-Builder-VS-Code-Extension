@@ -12,29 +12,36 @@ import {
 } from '../core/manifest.js';
 import { Summarizer } from '../llm/summarizer.js';
 import { MerkleNode } from '../types/index.js';
+import { validateApiKey, validateInitialized } from '../core/validation.js';
 
-export async function updateCommand(options: { force?: boolean } = {}) {
+export async function updateCommand(options: { force?: boolean; quiet?: boolean } = {}) {
   const cwd = process.cwd();
   const manifestPath = join(cwd, '.docs', 'manifest.json');
+  const quiet = options.quiet || false;
 
-  console.log(chalk.blue('🔍 Scanning codebase...\n'));
+  // Validate project is initialized
+  validateInitialized(cwd);
 
   // Load config
   const config = loadConfig(cwd);
 
+  // Validate API key is configured (before doing any work)
+  validateApiKey(config);
+
+  if (!quiet) {
+    console.log(chalk.blue('🔍 Scanning codebase...\n'));
+  }
+
   // Build current tree
-  const spinner = ora('Building Merkle tree...').start();
+  const spinner = quiet ? null : ora('Building Merkle tree...').start();
   const { tree: currentTree, rootHash } = buildCodeMerkleTree(cwd, config.exclude);
   const fileNodes = getFileNodes(currentTree);
-  spinner.succeed(`Found ${fileNodes.length} files`);
-
-  // Load previous manifest
-  const manifest = loadManifest(manifestPath);
-
-  if (!manifest) {
-    console.log(chalk.yellow('\n⚠️  No manifest found. Run `codebase-docs init` first.\n'));
-    return;
+  if (spinner) {
+    spinner.succeed(`Found ${fileNodes.length} files`);
   }
+
+  // Load previous manifest (guaranteed to exist after validateInitialized)
+  const manifest = loadManifest(manifestPath)!;
 
   // Detect changes
   const changes = options.force
@@ -46,14 +53,18 @@ export async function updateCommand(options: { force?: boolean } = {}) {
   );
 
   if (filesToProcess.length === 0) {
-    console.log(chalk.green('\n✅ Documentation is already up to date!\n'));
+    if (!quiet) {
+      console.log(chalk.green('\n✅ Documentation is already up to date!\n'));
+    }
     return;
   }
 
-  console.log(chalk.bold(`\nFiles to process: ${filesToProcess.length}`));
-  console.log(`  ${chalk.blue('New:')} ${changes.new.length}`);
-  console.log(`  ${chalk.yellow('Changed:')} ${changes.changed.length}`);
-  console.log(`  ${chalk.green('Unchanged:')} ${changes.unchanged.length} (skipping)\n`);
+  if (!quiet) {
+    console.log(chalk.bold(`\nFiles to process: ${filesToProcess.length}`));
+    console.log(`  ${chalk.blue('New:')} ${changes.new.length}`);
+    console.log(`  ${chalk.yellow('Changed:')} ${changes.changed.length}`);
+    console.log(`  ${chalk.green('Unchanged:')} ${changes.unchanged.length} (skipping)\n`);
+  }
 
   // Initialize summarizer
   const summarizer = new Summarizer(config);
@@ -67,7 +78,7 @@ export async function updateCommand(options: { force?: boolean } = {}) {
     const prefix = `[${processedCount}/${filesToProcess.length}]`;
     const status = changes.new.includes(node) ? chalk.blue('new') : chalk.yellow('changed');
 
-    const fileSpinner = ora(`${prefix} ${status} ${node.path}`).start();
+    const fileSpinner = quiet ? null : ora(`${prefix} ${status} ${node.path}`).start();
 
     try {
       const summaries = await summarizer.generateAllSummaries(node, cwd);
@@ -81,37 +92,49 @@ export async function updateCommand(options: { force?: boolean } = {}) {
       );
       totalTokens += nodeTokens;
 
-      fileSpinner.succeed(
-        `${prefix} ${status} ${node.path} ${chalk.gray(`(${nodeTokens} tokens)`)}`
-      );
+      if (fileSpinner) {
+        fileSpinner.succeed(
+          `${prefix} ${status} ${node.path} ${chalk.gray(`(${nodeTokens} tokens)`)}`
+        );
+      }
     } catch (error) {
-      fileSpinner.fail(`${prefix} ${status} ${node.path} - ${chalk.red('Error')}`);
-      console.error(chalk.red(`   ${error}`));
+      if (fileSpinner) {
+        fileSpinner.fail(`${prefix} ${status} ${node.path} - ${chalk.red('Error')}`);
+      }
+      console.error(chalk.red(`❌ Error processing ${node.path}: ${error}`));
     }
   }
 
   // Update manifest
-  console.log(chalk.blue('\n💾 Saving manifest...'));
+  if (!quiet) {
+    console.log(chalk.blue('\n💾 Saving manifest...'));
+  }
   const updatedManifest = updateManifest(manifest, currentTree, rootHash);
   updatedManifest.stats = calculateStats(currentTree);
   saveManifest(manifestPath, updatedManifest);
 
   // Display summary
-  console.log(chalk.green('\n✅ Documentation updated!\n'));
-  console.log(chalk.bold('Statistics:'));
-  console.log(`  Files processed: ${filesToProcess.length}`);
-  console.log(`  Tokens used: ${totalTokens.toLocaleString()}`);
-  console.log(`  Total tokens (all time): ${updatedManifest.stats.totalTokensUsed.toLocaleString()}`);
-  console.log(`  Estimated cost this run: $${((totalTokens / 1_000_000) * 9).toFixed(2)}`);
-  console.log(`  Total cost (all time): $${updatedManifest.stats.totalCost.toFixed(2)}`);
+  if (quiet) {
+    // Minimal output for hooks
+    console.log(chalk.green(`✅ Docs updated: ${filesToProcess.length} files, ${totalTokens.toLocaleString()} tokens, $${((totalTokens / 1_000_000) * 3).toFixed(2)}`));
+  } else {
+    // Full output for manual runs
+    console.log(chalk.green('\n✅ Documentation updated!\n'));
+    console.log(chalk.bold('Statistics:'));
+    console.log(`  Files processed: ${filesToProcess.length}`);
+    console.log(`  Tokens used: ${totalTokens.toLocaleString()}`);
+    console.log(`  Total tokens (all time): ${updatedManifest.stats.totalTokensUsed.toLocaleString()}`);
+    console.log(`  Estimated cost this run: $${((totalTokens / 1_000_000) * 3).toFixed(2)}`);
+    console.log(`  Total cost (all time): $${updatedManifest.stats.totalCost.toFixed(2)}`);
 
-  if (changes.unchanged.length > 0) {
-    const savedTokens = changes.unchanged.length * 1000; // Rough estimate
-    const savedCost = (savedTokens / 1_000_000) * 9;
-    console.log(
-      chalk.green(`  💡 Saved ~$${savedCost.toFixed(2)} by skipping ${changes.unchanged.length} unchanged files!`)
-    );
+    if (changes.unchanged.length > 0) {
+      const savedTokens = changes.unchanged.length * 1000; // Rough estimate
+      const savedCost = (savedTokens / 1_000_000) * 3;
+      console.log(
+        chalk.green(`  💡 Saved ~$${savedCost.toFixed(2)} by skipping ${changes.unchanged.length} unchanged files!`)
+      );
+    }
+
+    console.log(chalk.gray(`\n📝 Manifest saved to ${manifestPath}\n`));
   }
-
-  console.log(chalk.gray(`\n📝 Manifest saved to ${manifestPath}\n`));
 }

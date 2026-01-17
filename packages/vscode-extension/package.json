@@ -1,0 +1,62 @@
+{
+  "name": "codebase-docs",
+  "displayName": "Codebase Documentation",
+  "description": "View AI-generated documentation alongside your code",
+  "version": "0.1.0",
+  "publisher": "codebase-docs",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "id": "codebaseDocs",
+          "name": "Documentation"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codebase-docs.showDocumentation",
+        "title": "Show Documentation",
+        "category": "Codebase Docs"
+      },
+      {
+        "command": "codebase-docs.refresh",
+        "title": "Refresh Documentation",
+        "category": "Codebase Docs"
+      },
+      {
+        "command": "codebase-docs.showInSidebar",
+        "title": "Show in Documentation Sidebar",
+        "category": "Codebase Docs"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "codebase-docs.showDocumentation",
+        "key": "ctrl+shift+d",
+        "mac": "cmd+shift+d",
+        "when": "editorFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.3.3"
+  }
+}

@@ -3,21 +3,20 @@ import chalk from 'chalk';
 import { loadConfig } from '../core/config.js';
 import { buildCodeMerkleTree, getFileNodes } from '../core/merkle-tree.js';
 import { loadManifest, detectChanges } from '../core/manifest.js';
+import { validateInitialized } from '../core/validation.js';
 
 export async function statusCommand() {
   const cwd = process.cwd();
   const manifestPath = join(cwd, '.docs', 'manifest.json');
 
+  // Validate project is initialized
+  validateInitialized(cwd);
+
   console.log(chalk.blue('📊 Checking documentation status...\n'));
 
   // Load config and manifest
   const config = loadConfig(cwd);
-  const manifest = loadManifest(manifestPath);
-
-  if (!manifest) {
-    console.log(chalk.yellow('⚠️  No manifest found. Run `codebase-docs init` first.\n'));
-    return;
-  }
+  const manifest = loadManifest(manifestPath)!;
 
   // Build current tree
   const { tree: currentTree, rootHash } = buildCodeMerkleTree(cwd, config.exclude);
