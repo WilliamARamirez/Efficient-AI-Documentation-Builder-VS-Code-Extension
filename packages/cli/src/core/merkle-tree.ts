@@ -40,6 +40,7 @@ const DEFAULT_EXCLUDE = [
  */
 function shouldExclude(relativePath: string, excludePatterns: string[]): boolean {
   const pathParts = relativePath.split('/');
+  const fileName = pathParts[pathParts.length - 1];
 
   return excludePatterns.some(pattern => {
     // Exact path match (e.g., "src/foo/bar.ts")
@@ -47,10 +48,26 @@ function shouldExclude(relativePath: string, excludePatterns: string[]): boolean
       return true;
     }
 
-    // Glob pattern matching (e.g., "*.test.ts", "src/**/*.spec.js")
+    // Exact filename match (e.g., ".DS_Store" matches "foo/bar/.DS_Store")
+    if (!pattern.includes('/') && !pattern.includes('*') && fileName === pattern) {
+      return true;
+    }
+
+    // Simple extension pattern (e.g., "*.png" matches any .png file at any depth)
+    if (pattern.startsWith('*.') && !pattern.includes('/')) {
+      const extension = pattern.slice(1); // ".png"
+      return fileName.endsWith(extension);
+    }
+
+    // Glob pattern matching with path (e.g., "src/**/*.spec.js")
     if (pattern.includes('*')) {
-      // Simple glob matching for file extensions
-      const regex = new RegExp('^' + pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*') + '$');
+      // Escape special regex chars except * and convert globs
+      const escaped = pattern
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '{{GLOBSTAR}}')
+        .replace(/\*/g, '[^/]*')
+        .replace(/{{GLOBSTAR}}/g, '.*');
+      const regex = new RegExp('^' + escaped + '$');
       return regex.test(relativePath);
     }
 

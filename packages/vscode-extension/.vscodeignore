@@ -1,0 +1,14 @@
+.vscode
+src
+*.ts
+tsconfig.json
+node_modules
+.gitignore
+
+# Source maps and type definitions
+**/*.map
+**/*.d.ts
+
+# Explicitly exclude parent monorepo files
+../../**
+../cli/**
