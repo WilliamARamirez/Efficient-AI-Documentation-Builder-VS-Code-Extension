@@ -1,6 +1,7 @@
 {
   "exclude": [
     ".docs",
+    ".env",
     "node_modules",
     ".git",
     "dist",
@@ -37,5 +38,11 @@
     "enabled": true,
     "monthlyBudget": 50,
     "alertThreshold": 0.8
+  },
+   "embeddings": {
+    "enabled": true,
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "dimensions": 1536
   }
 }

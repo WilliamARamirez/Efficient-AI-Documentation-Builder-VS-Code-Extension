@@ -13,7 +13,7 @@ export function createEmbeddingProvider(config: Config): EmbeddingProvider {
 
   if (!apiKey) {
     throw new Error(
-      'OpenAI API key not found. Add OPENAI_API_KEY to your .env file, set it as an environment variable, or add embeddings.apiKey to .codedocs.json'
+      'OpenAI API key not found. Add OPENAI_API_KEY to your .env file, set it as an environment variable, or add embeddings.apiKey to .codedocsrc.json'
     );
   }
 

@@ -24,7 +24,7 @@ export function validateApiKey(config: Config): string {
     console.error(chalk.cyan('  export ANTHROPIC_API_KEY="your-api-key-here"\n'));
 
     console.error(chalk.bold('Option 3: Config file (not recommended for security)'));
-    console.error('  Add to .codedocs.json:');
+    console.error('  Add to .codedocsrc.json:');
     console.error(chalk.cyan('  { "llm": { "apiKey": "your-api-key-here" } }\n'));
 
     throw new Error('API key not configured');

@@ -44,7 +44,7 @@ const DEFAULT_CONFIG: Config = {
 };
 
 /**
- * Loads configuration from .codedocs.json or other supported formats
+ * Loads configuration from .codedocsrc.json or other supported formats
  */
 export function loadConfig(searchFrom?: string): Config {
   const explorer = cosmiconfigSync('codedocs');

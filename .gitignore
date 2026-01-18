@@ -8,3 +8,6 @@ coverage/
 .vscode/
 *.tsbuildinfo
 */.env.dev
+
+# Codebase docs
+.mcp.json

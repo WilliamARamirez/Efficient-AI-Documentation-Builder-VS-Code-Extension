@@ -33,7 +33,7 @@ export async function searchDocs(
   embeddingProvider: EmbeddingProvider | null
 ): Promise<string> {
   if (!vectorStore || !embeddingProvider) {
-    return 'Semantic search is not available. Embeddings are not enabled in the configuration. Enable embeddings in .codedocs.json and run `codebase-docs update` to generate embeddings.';
+    return 'Semantic search is not available. Embeddings are not enabled in the configuration. Enable embeddings in .codedocsrc.json and run `codebase-docs update` to generate embeddings.';
   }
 
   if (!vectorStore.hasData()) {

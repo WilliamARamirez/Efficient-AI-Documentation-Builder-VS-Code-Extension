@@ -12,6 +12,8 @@ An intelligent documentation system that uses Merkle trees and LLMs to automatic
   - **Executive**: High-level business impact summaries
 - **Two-Stage LLM Approach**: Analyzes code once, then translates for different audiences (cheaper than re-analyzing)
 - **No Circular Dependencies**: Documentation lives in your repo without triggering infinite regeneration loops
+- **MCP Server**: Expose documentation to LLMs via Model Context Protocol for AI-assisted development
+- **Semantic Search** (optional): Query documentation by concept using vector embeddings with LanceDB
 
 ## Architecture
 
@@ -76,10 +78,11 @@ codebase-docs init
 
 This creates:
 - `.docs/manifest.json` - Stores the Merkle tree and all documentation
-- `.codedocs.json` - Configuration file
-- Updates `.gitignore` to include `.docs/`
+- `.codedocsrc.json` - Configuration file
+- `.mcp.json` - MCP server configuration for Claude Code integration
+- Updates `.gitignore` to include `.docs/` and `.mcp.json`
 
-### 2. Set API Key
+### 2. Set API Keys
 
 **Recommended:** Create a `.env` file in your project root:
 
@@ -87,28 +90,27 @@ This creates:
 # Copy the example file
 cp /path/to/auto-docs/.env.example .env
 
-# Edit .env and add your API key
-# .env file:
-ANTHROPIC_API_KEY=your-api-key-here
+# Edit .env and add your API keys
+```
+
+`.env` file contents:
+```bash
+# Required - for documentation generation
+ANTHROPIC_API_KEY=your-anthropic-key-here
+
+# Optional - only needed if you enable semantic search
+OPENAI_API_KEY=your-openai-key-here
 ```
 
 **Alternative options:**
 
-Export as environment variable:
+Export as environment variables:
 ```bash
 export ANTHROPIC_API_KEY="your-api-key-here"
+export OPENAI_API_KEY="your-openai-key-here"  # optional
 ```
 
-Or add to `.codedocs.json` (not recommended for security):
-```json
-{
-  "llm": {
-    "apiKey": "your-api-key-here"
-  }
-}
-```
-
-**Important:** The `.env` file is already in `.gitignore` to prevent accidentally committing your API key.
+**Important:** The `.env` file is already in `.gitignore` to prevent accidentally committing your API keys.
 
 ### 3. Generate Documentation
 
@@ -161,15 +163,26 @@ codebase-docs status
 Update documentation for changed files.
 
 ```bash
-codebase-docs update [--force]
+codebase-docs update [--force] [--quiet]
 ```
 
 Options:
 - `--force`: Regenerate all documentation (ignores cache)
+- `--quiet`: Minimal output (useful for git hooks)
+
+### `serve`
+
+Start the MCP server to expose documentation to LLMs.
+
+```bash
+codebase-docs serve
+```
+
+The server uses stdio transport for integration with Claude Code and other MCP clients. See [MCP Server Integration](#mcp-server-integration) for setup details.
 
 ## Configuration
 
-Create a `.codedocs.json` file in your project root:
+Create a `.codedocsrc.json` file in your project root:
 
 ```json
 {
@@ -196,11 +209,120 @@ Create a `.codedocs.json` file in your project root:
     "enabled": true,
     "monthlyBudget": 50.00,
     "alertThreshold": 0.8
+  },
+
+  "embeddings": {
+    "enabled": false,
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "dimensions": 1536
   }
 }
 ```
 
-**Note:** Do NOT put your API key in `.codedocs.json`. Use a `.env` file instead (see setup instructions above).
+**Note:** Do NOT put your API keys in `.codedocsrc.json`. Use a `.env` file instead (see setup instructions above).
+
+### Embeddings Configuration
+
+Embeddings enable semantic search over your documentation. When enabled:
+- Requires `OPENAI_API_KEY` in your `.env` file
+- Creates `.docs/vectors.lance/` directory for vector storage
+- Allows the MCP server's `search_docs` tool to find documentation by concept
+
+Set `"embeddings": { "enabled": true }` to activate this feature.
+
+## MCP Server Integration
+
+The MCP (Model Context Protocol) server allows LLMs like Claude to query your codebase documentation directly.
+
+### How MCP Discovery Works
+
+The `codebase-docs serve` command uses **stdio transport**, which means Claude Code must spawn the server process itself to communicate with it. Running `codebase-docs serve` manually in a terminal won't work—Claude needs to be configured to launch it.
+
+Claude Code reads MCP server configurations from `.mcp.json` files in these locations:
+- **Project-level**: `.mcp.json` in your project root (recommended for project-specific setups)
+- **Global**: `~/.mcp.json` in your home directory (for servers you want available everywhere)
+
+**Important:** After adding or modifying `.mcp.json`, you must **restart Claude Code** for the changes to take effect.
+
+### Setup with Claude Code
+
+**Automatic setup (recommended)**
+
+The `codebase-docs init` command automatically creates a `.mcp.json` file in your project directory. Just restart Claude Code after running init, and the MCP server will be available.
+
+**Option 1: Project-level configuration (manual)**
+
+If you need to create the config manually, add a `.mcp.json` file in the root of your project:
+
+```json
+{
+  "mcpServers": {
+    "codebase-docs": {
+      "command": "npx",
+      "args": ["codebase-docs", "serve"]
+    }
+  }
+}
+```
+
+**Option 2: Global configuration with full path**
+
+If you haven't published the package to npm, add to `~/.mcp.json` with the full path to the CLI:
+
+```json
+{
+  "mcpServers": {
+    "codebase-docs": {
+      "command": "node",
+      "args": ["/path/to/auto-docs/packages/cli/dist/index.js", "serve"],
+      "cwd": "/path/to/your/initialized/project"
+    }
+  }
+}
+```
+
+The `cwd` field is required when using a global configuration—it tells the server which project's `.docs/manifest.json` to load.
+
+**Option 3: If installed globally**
+
+```json
+{
+  "mcpServers": {
+    "codebase-docs": {
+      "command": "codebase-docs",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Verifying the Server is Connected
+
+After restarting Claude Code, you can verify the server is connected by asking Claude to use one of the tools (e.g., "list all documented files using codebase-docs"). If configured correctly, you'll see the MCP tools available in Claude's responses.
+
+### Available Tools
+
+| Tool | Description | Requires Embeddings |
+|------|-------------|---------------------|
+| `search_docs` | Semantic search - find docs by concept | Yes |
+| `get_file_doc` | Get documentation for a specific file | No |
+| `list_files` | List all documented files | No |
+
+### Available Resources
+
+| Resource URI | Description |
+|--------------|-------------|
+| `docs://overview` | High-level codebase summary |
+| `docs://stats` | Documentation generation statistics |
+| `docs://manifest` | Summarized manifest with file list |
+
+### Example Queries
+
+Once connected, an LLM can ask:
+- "What files handle authentication?" → `search_docs`
+- "Show me the documentation for src/utils/validators.ts" → `get_file_doc`
+- "List all documented files in the components folder" → `list_files`
 
 ## VS Code Extension (Phase 2)
 
@@ -311,7 +433,7 @@ Using Claude 3.5 Haiku ($1/M input, $5/M output):
 
 *Assumes 5% of files change per week
 
-**Note:** Haiku is 3x cheaper than Sonnet 4 while still providing excellent documentation quality. You can switch to a more powerful model in `.codedocs.json` if needed.
+**Note:** Haiku is 3x cheaper than Sonnet 4 while still providing excellent documentation quality. You can switch to a more powerful model in `.codedocsrc.json` if needed.
 
 ## Manifest Structure
 
@@ -365,21 +487,24 @@ The `.docs/manifest.json` file contains:
 ```
 auto-docs/
 ├── packages/
-│   └── cli/                    # Core CLI tool
-│       ├── src/
-│       │   ├── commands/       # CLI commands (init, update, status)
-│       │   ├── core/           # Core logic (Merkle tree, manifest, config)
-│       │   ├── llm/            # LLM integration (Anthropic provider, prompts)
-│       │   ├── types/          # TypeScript type definitions
-│       │   └── index.ts        # CLI entry point
-│       └── package.json
+│   ├── cli/                    # Core CLI tool
+│   │   ├── src/
+│   │   │   ├── commands/       # CLI commands (init, update, status, serve)
+│   │   │   ├── core/           # Core logic (Merkle tree, manifest, config)
+│   │   │   ├── embeddings/     # Embedding providers (OpenAI)
+│   │   │   ├── llm/            # LLM integration (Anthropic provider, prompts)
+│   │   │   ├── mcp/            # MCP server (tools, resources)
+│   │   │   ├── vector/         # Vector storage (LanceDB)
+│   │   │   ├── types/          # TypeScript type definitions
+│   │   │   └── index.ts        # CLI entry point
+│   │   └── package.json
+│   │
+│   └── vscode-extension/       # VS Code extension
 │
 ├── examples/
 │   └── sample-codebase/        # Example project to test with
-│       └── src/
-│           ├── components/
-│           └── utils/
 │
+├── .env.example                # API key template
 ├── README.md
 └── package.json
 ```
@@ -402,14 +527,14 @@ cd packages/cli
 node dist/index.js init
 ```
 
-## Future Enhancements (Phase 2+)
+## Future Enhancements
 
-- **VS Code Extension**: Browse documentation in your IDE
 - **Confluence Integration**: Auto-publish docs to Confluence
 - **Directory Summaries**: Summarize entire directories, not just files
 - **Smart Context**: Include related files in analysis (imports, etc.)
 - **Custom Audiences**: Define your own audience types
 - **Git Integration**: Track docs across git history
+- **Additional Embedding Providers**: Voyage AI, local models
 
 
 ## License

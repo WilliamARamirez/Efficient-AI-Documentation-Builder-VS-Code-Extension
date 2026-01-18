@@ -15,7 +15,7 @@ export class Summarizer {
     const apiKey = config.llm?.apiKey || process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       throw new Error(
-        'Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable or configure in .codedocs.json'
+        'Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable or configure in .codedocsrc.json'
       );
     }
 
