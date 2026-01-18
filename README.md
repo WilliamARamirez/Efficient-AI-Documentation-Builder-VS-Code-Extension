@@ -411,16 +411,6 @@ node dist/index.js init
 - **Custom Audiences**: Define your own audience types
 - **Git Integration**: Track docs across git history
 
-## How This Demonstrates Technical Skills
-
-This project showcases:
-
-1. **Data Structures**: Deep understanding of Merkle trees and hash-based change detection
-2. **System Design**: Solving circular dependencies, optimizing for cost
-3. **LLM Integration**: Two-stage approach for cost optimization
-4. **TypeScript/Node.js**: Full-stack CLI tool with proper types
-5. **Developer Experience**: Clean CLI, helpful output, good error handling
-6. **Production Quality**: Configuration, cost tracking, incremental updates
 
 ## License
 
