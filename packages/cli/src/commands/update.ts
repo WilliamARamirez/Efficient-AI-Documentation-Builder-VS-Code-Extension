@@ -11,8 +11,10 @@ import {
   calculateStats,
 } from '../core/manifest.js';
 import { Summarizer } from '../llm/summarizer.js';
-import { MerkleNode } from '../types/index.js';
+import { MerkleNode, VectorDocument } from '../types/index.js';
 import { validateApiKey, validateInitialized } from '../core/validation.js';
+import { VectorStore } from '../vector/index.js';
+import { createEmbeddingProvider } from '../embeddings/index.js';
 
 export async function updateCommand(options: { force?: boolean; quiet?: boolean } = {}) {
   const cwd = process.cwd();
@@ -112,6 +114,86 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean 
   const updatedManifest = updateManifest(manifest, currentTree, rootHash);
   updatedManifest.stats = calculateStats(currentTree);
   saveManifest(manifestPath, updatedManifest);
+
+  // Generate embeddings if enabled
+  if (config.embeddings?.enabled) {
+    if (!quiet) {
+      console.log(chalk.blue('\n🔗 Generating embeddings...'));
+    }
+
+    try {
+      const embeddingProvider = createEmbeddingProvider(config);
+      const vectorStore = new VectorStore(join(cwd, '.docs'));
+      await vectorStore.initialize(embeddingProvider.getDimensions());
+
+      const embeddingSpinner = quiet ? null : ora('Embedding documentation...').start();
+      const embeddingDocs: VectorDocument[] = [];
+      let embeddingTokens = 0;
+
+      for (const node of filesToProcess) {
+        if (node.summaries?.engineering) {
+          const embedding = await embeddingProvider.embed(node.summaries.engineering.content);
+          embeddingTokens += embedding.tokens;
+
+          embeddingDocs.push({
+            id: `${node.path}:engineering`,
+            vector: embedding.vector,
+            path: node.path,
+            content: node.summaries.engineering.content,
+            audience: 'engineering',
+            fileHash: node.fileHash || '',
+            embeddedAt: new Date().toISOString(),
+          });
+        }
+
+        if (node.summaries?.product) {
+          const embedding = await embeddingProvider.embed(node.summaries.product.content);
+          embeddingTokens += embedding.tokens;
+
+          embeddingDocs.push({
+            id: `${node.path}:product`,
+            vector: embedding.vector,
+            path: node.path,
+            content: node.summaries.product.content,
+            audience: 'product',
+            fileHash: node.fileHash || '',
+            embeddedAt: new Date().toISOString(),
+          });
+        }
+
+        if (node.summaries?.executive) {
+          const embedding = await embeddingProvider.embed(node.summaries.executive.content);
+          embeddingTokens += embedding.tokens;
+
+          embeddingDocs.push({
+            id: `${node.path}:executive`,
+            vector: embedding.vector,
+            path: node.path,
+            content: node.summaries.executive.content,
+            audience: 'executive',
+            fileHash: node.fileHash || '',
+            embeddedAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      await vectorStore.upsert(embeddingDocs);
+
+      // Handle deleted files - remove from vector store
+      for (const deletedPath of changes.deleted) {
+        await vectorStore.deleteByPath(deletedPath);
+      }
+
+      if (embeddingSpinner) {
+        embeddingSpinner.succeed(
+          `Embedded ${embeddingDocs.length} documents (${embeddingTokens.toLocaleString()} tokens)`
+        );
+      }
+    } catch (error) {
+      console.error(chalk.yellow(`\n⚠️  Warning: Could not generate embeddings: ${error}`));
+      console.error(chalk.yellow('   Semantic search will not be available.'));
+    }
+  }
 
   // Display summary
   if (quiet) {

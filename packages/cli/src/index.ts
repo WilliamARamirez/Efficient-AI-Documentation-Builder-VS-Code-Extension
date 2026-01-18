@@ -7,6 +7,7 @@ import { initCommand } from './commands/init.js';
 import { updateCommand } from './commands/update.js';
 import { statusCommand } from './commands/status.js';
 import { installHookCommand } from './commands/install-hook.js';
+import { serveCommand } from './commands/serve.js';
 
 // Load environment variables from .env file (silently)
 dotenv.config({ debug: false });
@@ -64,6 +65,18 @@ program
   .action(async (options) => {
     try {
       await installHookCommand(options);
+    } catch (error) {
+      console.error(chalk.red(`Error: ${error}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('serve')
+  .description('Start MCP server for LLM integration')
+  .action(async () => {
+    try {
+      await serveCommand();
     } catch (error) {
       console.error(chalk.red(`Error: ${error}`));
       process.exit(1);

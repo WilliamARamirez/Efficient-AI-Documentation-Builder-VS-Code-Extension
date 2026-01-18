@@ -62,6 +62,7 @@ export interface Config {
     monthlyBudget?: number;
     alertThreshold?: number;
   };
+  embeddings?: EmbeddingConfig;
 }
 
 export interface UpdateResult {
@@ -72,3 +73,43 @@ export interface UpdateResult {
 }
 
 export type AudienceType = 'engineering' | 'product' | 'executive';
+
+// Embedding types
+export interface EmbeddingConfig {
+  enabled?: boolean;
+  provider?: 'openai' | 'voyage';
+  model?: string;
+  apiKey?: string;
+  dimensions?: number;
+}
+
+export interface EmbeddingResult {
+  vector: number[];
+  model: string;
+  dimensions: number;
+  tokens: number;
+}
+
+// Vector storage types
+export interface VectorDocument {
+  id: string;
+  vector: number[];
+  path: string;
+  content: string;
+  audience: AudienceType;
+  fileHash: string;
+  embeddedAt: string;
+}
+
+export interface SearchResult {
+  path: string;
+  content: string;
+  audience: AudienceType;
+  score: number;
+}
+
+export interface VectorSearchOptions {
+  limit?: number;
+  audience?: AudienceType;
+  minScore?: number;
+}

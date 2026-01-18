@@ -35,6 +35,12 @@ const DEFAULT_CONFIG: Config = {
     monthlyBudget: 50.0,
     alertThreshold: 0.8,
   },
+  embeddings: {
+    enabled: false,
+    provider: 'openai',
+    model: 'text-embedding-3-small',
+    dimensions: 1536,
+  },
 };
 
 /**
@@ -83,6 +89,10 @@ function mergeConfig(defaults: Config, user: Partial<Config>): Config {
     costTracking: {
       ...defaults.costTracking,
       ...user.costTracking,
+    },
+    embeddings: {
+      ...defaults.embeddings,
+      ...user.embeddings,
     },
   };
 }
