@@ -15,6 +15,24 @@ const DEFAULT_EXCLUDE = [
   '.vscode',
   '.idea',
   '*.log',
+  // macOS system files
+  '.DS_Store',
+  // Images
+  '*.png',
+  '*.jpg',
+  '*.jpeg',
+  '*.gif',
+  '*.svg',
+  '*.ico',
+  '*.webp',
+  '*.bmp',
+  '*.tiff',
+  // Fonts
+  '*.ttf',
+  '*.otf',
+  '*.woff',
+  '*.woff2',
+  '*.eot',
 ];
 
 /**
@@ -24,15 +42,21 @@ function shouldExclude(relativePath: string, excludePatterns: string[]): boolean
   const pathParts = relativePath.split('/');
 
   return excludePatterns.some(pattern => {
-    // Check if any part of the path matches the pattern
+    // Exact path match (e.g., "src/foo/bar.ts")
+    if (relativePath === pattern) {
+      return true;
+    }
+
+    // Glob pattern matching (e.g., "*.test.ts", "src/**/*.spec.js")
     if (pattern.includes('*')) {
       // Simple glob matching for file extensions
-      const regex = new RegExp(pattern.replace(/\*/g, '.*'));
+      const regex = new RegExp('^' + pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*') + '$');
       return regex.test(relativePath);
     }
 
-    // Check if pattern matches any directory in the path
-    return pathParts.some(part => part === pattern || relativePath.startsWith(pattern + '/'));
+    // Directory name matching (e.g., "node_modules", ".git")
+    // Check if pattern matches any directory in the path or if path is inside that directory
+    return pathParts.some(part => part === pattern) || relativePath.startsWith(pattern + '/');
   });
 }
 

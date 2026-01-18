@@ -18,6 +18,24 @@ const DEFAULT_CONFIG: Config = {
     '*.test.js',
     '*.spec.ts',
     '*.spec.js',
+    // macOS system files
+    '.DS_Store',
+    // Images
+    '*.png',
+    '*.jpg',
+    '*.jpeg',
+    '*.gif',
+    '*.svg',
+    '*.ico',
+    '*.webp',
+    '*.bmp',
+    '*.tiff',
+    // Fonts
+    '*.ttf',
+    '*.otf',
+    '*.woff',
+    '*.woff2',
+    '*.eot',
   ],
   llm: {
     provider: 'anthropic',

@@ -49,6 +49,7 @@ program
   .description('Update documentation for changed files')
   .option('-f, --force', 'Force regenerate all documentation')
   .option('-q, --quiet', 'Minimal output (for git hooks)')
+  .option('-y, --yes', 'Skip confirmation prompt')
   .action(async (options) => {
     try {
       await updateCommand(options);

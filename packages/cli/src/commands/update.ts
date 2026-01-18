@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { createInterface } from 'readline';
 import chalk from 'chalk';
 import ora from 'ora';
 import { loadConfig } from '../core/config.js';
@@ -16,7 +17,25 @@ import { validateApiKey, validateInitialized } from '../core/validation.js';
 import { VectorStore } from '../vector/index.js';
 import { createEmbeddingProvider } from '../embeddings/index.js';
 
-export async function updateCommand(options: { force?: boolean; quiet?: boolean } = {}) {
+/**
+ * Prompts user for yes/no confirmation
+ */
+async function promptConfirmation(message: string): Promise<boolean> {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise(resolve => {
+    rl.question(message, answer => {
+      rl.close();
+      const normalized = answer.trim().toLowerCase();
+      resolve(normalized === 'y' || normalized === 'yes');
+    });
+  });
+}
+
+export async function updateCommand(options: { force?: boolean; quiet?: boolean; yes?: boolean } = {}) {
   const cwd = process.cwd();
   const manifestPath = join(cwd, '.docs', 'manifest.json');
   const quiet = options.quiet || false;
@@ -66,6 +85,28 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean 
     console.log(`  ${chalk.blue('New:')} ${changes.new.length}`);
     console.log(`  ${chalk.yellow('Changed:')} ${changes.changed.length}`);
     console.log(`  ${chalk.green('Unchanged:')} ${changes.unchanged.length} (skipping)\n`);
+
+    // Display file list in copy-pastable format for exclude array
+    console.log(chalk.bold('Files that will be documented:'));
+    console.log(chalk.gray('(Copy any paths below to add to "exclude" in .codedocsrc.json)\n'));
+
+    for (const node of filesToProcess) {
+      console.log(`  "${node.path}",`);
+    }
+    console.log('');
+
+    // Prompt for confirmation (skip if --yes flag is provided)
+    if (!options.yes) {
+      const confirmed = await promptConfirmation(
+        chalk.yellow('Proceed with documentation generation? (y/n): ')
+      );
+
+      if (!confirmed) {
+        console.log(chalk.gray('\nAborted. No files were processed.\n'));
+        return;
+      }
+      console.log('');
+    }
   }
 
   // Initialize summarizer
