@@ -63,6 +63,7 @@ export interface Config {
     alertThreshold?: number;
   };
   embeddings?: EmbeddingConfig;
+  bundleThreshold?: number; // Default: 5 - merge staging into manifest every N files
 }
 
 export interface UpdateResult {
@@ -112,4 +113,36 @@ export interface VectorSearchOptions {
   limit?: number;
   audience?: AudienceType;
   minScore?: number;
+}
+
+// Staging types for incremental updates
+export interface StagingEntry {
+  path: string;
+  fileHash: string;
+  summaries: Summaries;
+  completedAt: string;
+  tokensUsed: number;
+}
+
+export interface FailedEntry {
+  path: string;
+  fileHash: string;
+  error: string;
+  failedAt: string;
+  retryCount: number;
+  isRateLimited: boolean;
+}
+
+export interface StagingFile {
+  version: string;
+  startedAt: string;
+  rootHash: string;
+  completed: StagingEntry[];
+  failed: FailedEntry[];
+}
+
+export interface LockFile {
+  pid: number;
+  startedAt: string;
+  hostname: string;
 }

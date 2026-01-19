@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { Manifest, MerkleNode } from '../types/index.js';
+import { Manifest, MerkleNode, StagingFile } from '../types/index.js';
 
 /**
  * Loads manifest from disk
@@ -161,5 +161,38 @@ export function calculateStats(tree: Record<string, MerkleNode>): Manifest['stat
     totalFiles,
     totalTokensUsed,
     totalCost: Math.round(totalCost * 100) / 100, // Round to cents
+  };
+}
+
+/**
+ * Merges completed entries from staging into manifest
+ * For each staging.completed entry, copies summaries to the corresponding node
+ * Files in staging.failed are NOT updated (preserve old data or leave undocumented)
+ */
+export function mergeStaging(
+  manifest: Manifest,
+  tree: Record<string, MerkleNode>,
+  staging: StagingFile
+): Manifest {
+  // Clone the tree to avoid mutating the original
+  const updatedTree = { ...tree };
+
+  // Process each completed entry from staging
+  for (const entry of staging.completed) {
+    const node = updatedTree[entry.path];
+    if (node) {
+      // Update the node with summaries from staging
+      updatedTree[entry.path] = {
+        ...node,
+        summaries: entry.summaries,
+        lastAnalyzed: entry.completedAt,
+      };
+    }
+  }
+
+  return {
+    ...manifest,
+    generatedAt: new Date().toISOString(),
+    nodes: updatedTree,
   };
 }

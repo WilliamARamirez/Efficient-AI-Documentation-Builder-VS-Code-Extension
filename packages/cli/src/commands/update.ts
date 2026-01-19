@@ -10,12 +10,32 @@ import {
   updateManifest,
   saveManifest,
   calculateStats,
+  mergeStaging,
 } from '../core/manifest.js';
 import { Summarizer } from '../llm/summarizer.js';
-import { MerkleNode, VectorDocument } from '../types/index.js';
+import { MerkleNode, VectorDocument, StagingFile } from '../types/index.js';
 import { validateApiKey, validateInitialized } from '../core/validation.js';
 import { VectorStore } from '../vector/index.js';
 import { createEmbeddingProvider } from '../embeddings/index.js';
+import {
+  loadStaging,
+  saveStaging,
+  createStaging,
+  addCompletedEntry,
+  addFailedEntry,
+  clearStaging,
+  getCompletedPaths,
+  getTotalTokensUsed,
+} from '../core/staging.js';
+import {
+  acquireLock,
+  releaseLock,
+  checkLock,
+  getLockInfo,
+  setupLockCleanup,
+} from '../core/lock.js';
+import { withRetry } from '../llm/retry.js';
+import { RateLimitError } from '../llm/errors.js';
 
 /**
  * Prompts user for yes/no confirmation
@@ -37,7 +57,10 @@ async function promptConfirmation(message: string): Promise<boolean> {
 
 export async function updateCommand(options: { force?: boolean; quiet?: boolean; yes?: boolean } = {}) {
   const cwd = process.cwd();
-  const manifestPath = join(cwd, '.docs', 'manifest.json');
+  const docsDir = join(cwd, '.docs');
+  const manifestPath = join(docsDir, 'manifest.json');
+  const stagingPath = join(docsDir, 'staging.json');
+  const lockPath = join(docsDir, '.update.lock');
   const quiet = options.quiet || false;
 
   // Validate project is initialized
@@ -49,215 +72,393 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean;
   // Validate API key is configured (before doing any work)
   validateApiKey(config);
 
-  if (!quiet) {
-    console.log(chalk.blue('🔍 Scanning codebase...\n'));
+  // ========== ACQUIRE LOCK ==========
+  if (checkLock(lockPath)) {
+    const lockInfo = getLockInfo(lockPath);
+    console.error(
+      chalk.red(`❌ Another update is in progress (PID: ${lockInfo?.pid}, started: ${lockInfo?.startedAt})`)
+    );
+    console.error(chalk.gray('   If you believe this is stale, delete: ' + lockPath));
+    process.exit(1);
   }
 
-  // Build current tree
-  const spinner = quiet ? null : ora('Building Merkle tree...').start();
-  const { tree: currentTree, rootHash } = buildCodeMerkleTree(cwd, config.exclude);
-  const fileNodes = getFileNodes(currentTree);
-  if (spinner) {
-    spinner.succeed(`Found ${fileNodes.length} files`);
+  try {
+    acquireLock(lockPath);
+  } catch (error) {
+    console.error(chalk.red(`❌ Failed to acquire lock: ${error}`));
+    process.exit(1);
   }
 
-  // Load previous manifest (guaranteed to exist after validateInitialized)
-  const manifest = loadManifest(manifestPath)!;
+  // Register cleanup handler for SIGINT/SIGTERM
+  const removeCleanupHandler = setupLockCleanup(lockPath);
 
-  // Detect changes
-  const changes = options.force
-    ? { new: fileNodes, changed: [], unchanged: [], deleted: [] }
-    : detectChanges(currentTree, manifest);
-
-  const filesToProcess = [...changes.new, ...changes.changed].filter(
-    node => node.type === 'file'
-  );
-
-  if (filesToProcess.length === 0) {
+  try {
     if (!quiet) {
-      console.log(chalk.green('\n✅ Documentation is already up to date!\n'));
+      console.log(chalk.blue('🔍 Scanning codebase...\n'));
     }
-    return;
-  }
 
-  if (!quiet) {
-    console.log(chalk.bold(`\nFiles to process: ${filesToProcess.length}`));
-    console.log(`  ${chalk.blue('New:')} ${changes.new.length}`);
-    console.log(`  ${chalk.yellow('Changed:')} ${changes.changed.length}`);
-    console.log(`  ${chalk.green('Unchanged:')} ${changes.unchanged.length} (skipping)\n`);
-
-    // Display file list in copy-pastable format for exclude array
-    console.log(chalk.bold('Files that will be documented:'));
-    console.log(chalk.gray('(Copy any paths below to add to "exclude" in .codedocsrc.json)\n'));
-
-    for (const node of filesToProcess) {
-      console.log(`  "${node.path}",`);
+    // Build current tree
+    const spinner = quiet ? null : ora('Building Merkle tree...').start();
+    const { tree: currentTree, rootHash } = buildCodeMerkleTree(cwd, config.exclude);
+    const fileNodes = getFileNodes(currentTree);
+    if (spinner) {
+      spinner.succeed(`Found ${fileNodes.length} files`);
     }
-    console.log('');
 
-    // Prompt for confirmation (skip if --yes flag is provided)
-    if (!options.yes) {
-      const confirmed = await promptConfirmation(
-        chalk.yellow('Proceed with documentation generation? (y/n): ')
-      );
+    // Load previous manifest (guaranteed to exist after validateInitialized)
+    let manifest = loadManifest(manifestPath)!;
 
-      if (!confirmed) {
-        console.log(chalk.gray('\nAborted. No files were processed.\n'));
-        return;
+    // ========== CRASH RECOVERY CHECK ==========
+    let staging = loadStaging(stagingPath);
+    let resumingFromCrash = false;
+
+    if (staging) {
+      if (staging.rootHash !== rootHash) {
+        // Tree has changed since staging was created
+        if (!quiet) {
+          console.log(chalk.yellow('\n⚠️  Found stale staging file (codebase has changed)'));
+        }
+
+        if (!options.yes) {
+          const discard = await promptConfirmation(
+            chalk.yellow('Discard previous progress and start fresh? (y/n): ')
+          );
+          if (!discard) {
+            console.log(chalk.gray('\nAborted. Please resolve staging file manually.\n'));
+            return;
+          }
+        }
+
+        // Discard stale staging
+        clearStaging(stagingPath);
+        staging = null;
+      } else {
+        // Resume from staging
+        resumingFromCrash = true;
+        const completedCount = staging.completed.length;
+        const failedCount = staging.failed.length;
+
+        if (!quiet) {
+          console.log(chalk.yellow(`\n🔄 Resuming from previous run (${completedCount} completed, ${failedCount} failed)`));
+        }
+
+        // Merge any completed work into manifest before continuing
+        if (completedCount > 0) {
+          manifest = mergeStaging(manifest, currentTree, staging);
+          saveManifest(manifestPath, manifest);
+
+          // Update tree nodes with staged summaries
+          for (const entry of staging.completed) {
+            if (currentTree[entry.path]) {
+              currentTree[entry.path].summaries = entry.summaries;
+              currentTree[entry.path].lastAnalyzed = entry.completedAt;
+            }
+          }
+        }
       }
-      console.log('');
     }
-  }
 
-  // Initialize summarizer
-  const summarizer = new Summarizer(config);
+    // Detect changes
+    const changes = options.force
+      ? { new: fileNodes, changed: [], unchanged: [], deleted: [] }
+      : detectChanges(currentTree, manifest);
 
-  // Process each file
-  let processedCount = 0;
-  let totalTokens = 0;
+    let filesToProcess = [...changes.new, ...changes.changed].filter(
+      node => node.type === 'file'
+    );
 
-  for (const node of filesToProcess) {
-    processedCount++;
-    const prefix = `[${processedCount}/${filesToProcess.length}]`;
-    const status = changes.new.includes(node) ? chalk.blue('new') : chalk.yellow('changed');
+    // Filter out already-completed files from staging (for resume)
+    if (staging && resumingFromCrash) {
+      const completedPaths = getCompletedPaths(staging);
+      const originalCount = filesToProcess.length;
+      filesToProcess = filesToProcess.filter(node => !completedPaths.has(node.path));
 
-    const fileSpinner = quiet ? null : ora(`${prefix} ${status} ${node.path}`).start();
-
-    try {
-      const summaries = await summarizer.generateAllSummaries(node, cwd);
-      node.summaries = summaries;
-      node.lastAnalyzed = new Date().toISOString();
-
-      // Calculate tokens used
-      const nodeTokens = Object.values(summaries).reduce(
-        (sum, summary) => sum + (summary?.tokens || 0),
-        0
-      );
-      totalTokens += nodeTokens;
-
-      if (fileSpinner) {
-        fileSpinner.succeed(
-          `${prefix} ${status} ${node.path} ${chalk.gray(`(${nodeTokens} tokens)`)}`
-        );
+      if (!quiet && originalCount !== filesToProcess.length) {
+        console.log(chalk.gray(`   Skipping ${originalCount - filesToProcess.length} already-processed files`));
       }
-    } catch (error) {
-      if (fileSpinner) {
-        fileSpinner.fail(`${prefix} ${status} ${node.path} - ${chalk.red('Error')}`);
-      }
-      console.error(chalk.red(`❌ Error processing ${node.path}: ${error}`));
     }
-  }
 
-  // Update manifest
-  if (!quiet) {
-    console.log(chalk.blue('\n💾 Saving manifest...'));
-  }
-  const updatedManifest = updateManifest(manifest, currentTree, rootHash);
-  updatedManifest.stats = calculateStats(currentTree);
-  saveManifest(manifestPath, updatedManifest);
+    if (filesToProcess.length === 0) {
+      if (!quiet) {
+        console.log(chalk.green('\n✅ Documentation is already up to date!\n'));
+      }
+      clearStaging(stagingPath);
+      return;
+    }
 
-  // Generate embeddings if enabled
-  if (config.embeddings?.enabled) {
     if (!quiet) {
-      console.log(chalk.blue('\n🔗 Generating embeddings...'));
-    }
+      console.log(chalk.bold(`\nFiles to process: ${filesToProcess.length}`));
+      console.log(`  ${chalk.blue('New:')} ${changes.new.length}`);
+      console.log(`  ${chalk.yellow('Changed:')} ${changes.changed.length}`);
+      console.log(`  ${chalk.green('Unchanged:')} ${changes.unchanged.length} (skipping)\n`);
 
-    try {
-      const embeddingProvider = createEmbeddingProvider(config);
-      const vectorStore = new VectorStore(join(cwd, '.docs'));
-      await vectorStore.initialize(embeddingProvider.getDimensions());
-
-      const embeddingSpinner = quiet ? null : ora('Embedding documentation...').start();
-      const embeddingDocs: VectorDocument[] = [];
-      let embeddingTokens = 0;
+      // Display file list in copy-pastable format for exclude array
+      console.log(chalk.bold('Files that will be documented:'));
+      console.log(chalk.gray('(Copy any paths below to add to "exclude" in .codedocsrc.json)\n'));
 
       for (const node of filesToProcess) {
-        if (node.summaries?.engineering) {
-          const embedding = await embeddingProvider.embed(node.summaries.engineering.content);
-          embeddingTokens += embedding.tokens;
+        console.log(`  "${node.path}",`);
+      }
+      console.log('');
 
-          embeddingDocs.push({
-            id: `${node.path}:engineering`,
-            vector: embedding.vector,
-            path: node.path,
-            content: node.summaries.engineering.content,
-            audience: 'engineering',
-            fileHash: node.fileHash || '',
-            embeddedAt: new Date().toISOString(),
-          });
+      // Prompt for confirmation (skip if --yes flag is provided)
+      if (!options.yes) {
+        const confirmed = await promptConfirmation(
+          chalk.yellow('Proceed with documentation generation? (y/n): ')
+        );
+
+        if (!confirmed) {
+          console.log(chalk.gray('\nAborted. No files were processed.\n'));
+          clearStaging(stagingPath);
+          return;
+        }
+        console.log('');
+      }
+    }
+
+    // Initialize summarizer
+    const summarizer = new Summarizer(config);
+
+    // ========== PROCESSING LOOP WITH PERIODIC BUNDLING ==========
+    const bundleThreshold = config.bundleThreshold ?? 5;
+    let pendingCount = 0;
+    let processedCount = 0;
+    let totalTokens = staging ? getTotalTokensUsed(staging) : 0;
+    let rateLimitHit = false;
+
+    // Create fresh staging if not resuming
+    if (!staging) {
+      staging = createStaging(rootHash);
+    }
+
+    for (const node of filesToProcess) {
+      processedCount++;
+      const prefix = `[${processedCount}/${filesToProcess.length}]`;
+      const status = changes.new.includes(node) ? chalk.blue('new') : chalk.yellow('changed');
+
+      const fileSpinner = quiet ? null : ora(`${prefix} ${status} ${node.path}`).start();
+
+      try {
+        // Use retry logic for API calls
+        const summaries = await withRetry(
+          () => summarizer.generateAllSummaries(node, cwd),
+          { maxRetries: 3, initialDelayMs: 1000 }
+        );
+
+        node.summaries = summaries;
+        node.lastAnalyzed = new Date().toISOString();
+
+        // Calculate tokens used
+        const nodeTokens = Object.values(summaries).reduce(
+          (sum, summary) => sum + (summary?.tokens || 0),
+          0
+        );
+        totalTokens += nodeTokens;
+
+        // Add to staging
+        staging = addCompletedEntry(
+          staging,
+          node.path,
+          node.fileHash || '',
+          summaries,
+          nodeTokens
+        );
+        saveStaging(stagingPath, staging);
+        pendingCount++;
+
+        if (fileSpinner) {
+          fileSpinner.succeed(
+            `${prefix} ${status} ${node.path} ${chalk.gray(`(${nodeTokens} tokens)`)}`
+          );
         }
 
-        if (node.summaries?.product) {
-          const embedding = await embeddingProvider.embed(node.summaries.product.content);
-          embeddingTokens += embedding.tokens;
+        // Periodic bundle every N files
+        if (pendingCount >= bundleThreshold) {
+          if (!quiet) {
+            console.log(chalk.gray(`   💾 Bundling ${pendingCount} files into manifest...`));
+          }
 
-          embeddingDocs.push({
-            id: `${node.path}:product`,
-            vector: embedding.vector,
-            path: node.path,
-            content: node.summaries.product.content,
-            audience: 'product',
-            fileHash: node.fileHash || '',
-            embeddedAt: new Date().toISOString(),
-          });
+          manifest = mergeStaging(manifest, currentTree, staging);
+          manifest.stats = calculateStats(currentTree);
+          saveManifest(manifestPath, manifest);
+
+          // Reset staging (keep failed entries)
+          const failedEntries = staging.failed;
+          staging = createStaging(rootHash);
+          staging.failed = failedEntries;
+          saveStaging(stagingPath, staging);
+          pendingCount = 0;
+        }
+      } catch (error) {
+        if (fileSpinner) {
+          fileSpinner.fail(`${prefix} ${status} ${node.path} - ${chalk.red('Error')}`);
         }
 
-        if (node.summaries?.executive) {
-          const embedding = await embeddingProvider.embed(node.summaries.executive.content);
-          embeddingTokens += embedding.tokens;
+        // Get existing retry count if any
+        const existingFailed = staging.failed.find(f => f.path === node.path);
+        const retryCount = (existingFailed?.retryCount || 0) + 1;
+        const isRateLimited = error instanceof RateLimitError;
 
-          embeddingDocs.push({
-            id: `${node.path}:executive`,
-            vector: embedding.vector,
-            path: node.path,
-            content: node.summaries.executive.content,
-            audience: 'executive',
-            fileHash: node.fileHash || '',
-            embeddedAt: new Date().toISOString(),
-          });
+        staging = addFailedEntry(
+          staging,
+          node.path,
+          node.fileHash || '',
+          error instanceof Error ? error.message : String(error),
+          retryCount,
+          isRateLimited
+        );
+        saveStaging(stagingPath, staging);
+
+        if (isRateLimited) {
+          rateLimitHit = true;
+          console.error(chalk.yellow(`\n⚠️  Rate limit hit. Progress saved. Re-run to continue.`));
+          break;
+        } else {
+          console.error(chalk.red(`❌ Error processing ${node.path}: ${error}`));
         }
       }
+    }
 
-      await vectorStore.upsert(embeddingDocs);
+    // ========== FINAL BUNDLE ==========
+    if (staging.completed.length > 0) {
+      if (!quiet) {
+        console.log(chalk.blue('\n💾 Saving final manifest...'));
+      }
+      manifest = mergeStaging(manifest, currentTree, staging);
+      manifest.stats = calculateStats(currentTree);
+      saveManifest(manifestPath, manifest);
+    }
 
-      // Handle deleted files - remove from vector store
-      for (const deletedPath of changes.deleted) {
-        await vectorStore.deleteByPath(deletedPath);
+    // Only clear staging if all files were processed successfully
+    if (!rateLimitHit && staging.failed.length === 0) {
+      clearStaging(stagingPath);
+    }
+
+    // Generate embeddings if enabled (only for successfully processed files)
+    const successfulNodes = filesToProcess.filter(node => node.summaries);
+
+    if (config.embeddings?.enabled && successfulNodes.length > 0) {
+      if (!quiet) {
+        console.log(chalk.blue('\n🔗 Generating embeddings...'));
       }
 
-      if (embeddingSpinner) {
-        embeddingSpinner.succeed(
-          `Embedded ${embeddingDocs.length} documents (${embeddingTokens.toLocaleString()} tokens)`
+      try {
+        const embeddingProvider = createEmbeddingProvider(config);
+        const vectorStore = new VectorStore(docsDir);
+        await vectorStore.initialize(embeddingProvider.getDimensions());
+
+        const embeddingSpinner = quiet ? null : ora('Embedding documentation...').start();
+        const embeddingDocs: VectorDocument[] = [];
+        let embeddingTokens = 0;
+
+        for (const node of successfulNodes) {
+          if (node.summaries?.engineering) {
+            const embedding = await embeddingProvider.embed(node.summaries.engineering.content);
+            embeddingTokens += embedding.tokens;
+
+            embeddingDocs.push({
+              id: `${node.path}:engineering`,
+              vector: embedding.vector,
+              path: node.path,
+              content: node.summaries.engineering.content,
+              audience: 'engineering',
+              fileHash: node.fileHash || '',
+              embeddedAt: new Date().toISOString(),
+            });
+          }
+
+          if (node.summaries?.product) {
+            const embedding = await embeddingProvider.embed(node.summaries.product.content);
+            embeddingTokens += embedding.tokens;
+
+            embeddingDocs.push({
+              id: `${node.path}:product`,
+              vector: embedding.vector,
+              path: node.path,
+              content: node.summaries.product.content,
+              audience: 'product',
+              fileHash: node.fileHash || '',
+              embeddedAt: new Date().toISOString(),
+            });
+          }
+
+          if (node.summaries?.executive) {
+            const embedding = await embeddingProvider.embed(node.summaries.executive.content);
+            embeddingTokens += embedding.tokens;
+
+            embeddingDocs.push({
+              id: `${node.path}:executive`,
+              vector: embedding.vector,
+              path: node.path,
+              content: node.summaries.executive.content,
+              audience: 'executive',
+              fileHash: node.fileHash || '',
+              embeddedAt: new Date().toISOString(),
+            });
+          }
+        }
+
+        await vectorStore.upsert(embeddingDocs);
+
+        // Handle deleted files - remove from vector store
+        for (const deletedPath of changes.deleted) {
+          await vectorStore.deleteByPath(deletedPath);
+        }
+
+        if (embeddingSpinner) {
+          embeddingSpinner.succeed(
+            `Embedded ${embeddingDocs.length} documents (${embeddingTokens.toLocaleString()} tokens)`
+          );
+        }
+      } catch (error) {
+        console.error(chalk.yellow(`\n⚠️  Warning: Could not generate embeddings: ${error}`));
+        console.error(chalk.yellow('   Semantic search will not be available.'));
+      }
+    }
+
+    // ========== REPORT RESULTS ==========
+    const failedFiles = staging?.failed || [];
+
+    if (quiet) {
+      // Minimal output for hooks
+      const successCount = successfulNodes.length;
+      console.log(chalk.green(`✅ Docs updated: ${successCount} files, ${totalTokens.toLocaleString()} tokens, $${((totalTokens / 1_000_000) * 3).toFixed(2)}`));
+      if (failedFiles.length > 0) {
+        console.log(chalk.yellow(`⚠️  ${failedFiles.length} files failed`));
+      }
+    } else {
+      // Full output for manual runs
+      console.log(chalk.green('\n✅ Documentation updated!\n'));
+      console.log(chalk.bold('Statistics:'));
+      console.log(`  Files processed: ${successfulNodes.length}`);
+      console.log(`  Tokens used: ${totalTokens.toLocaleString()}`);
+      console.log(`  Total tokens (all time): ${manifest.stats.totalTokensUsed.toLocaleString()}`);
+      console.log(`  Estimated cost this run: $${((totalTokens / 1_000_000) * 3).toFixed(2)}`);
+      console.log(`  Total cost (all time): $${manifest.stats.totalCost.toFixed(2)}`);
+
+      if (changes.unchanged.length > 0) {
+        const savedTokens = changes.unchanged.length * 1000; // Rough estimate
+        const savedCost = (savedTokens / 1_000_000) * 3;
+        console.log(
+          chalk.green(`  💡 Saved ~$${savedCost.toFixed(2)} by skipping ${changes.unchanged.length} unchanged files!`)
         );
       }
-    } catch (error) {
-      console.error(chalk.yellow(`\n⚠️  Warning: Could not generate embeddings: ${error}`));
-      console.error(chalk.yellow('   Semantic search will not be available.'));
+
+      // Report failed files
+      if (failedFiles.length > 0) {
+        console.log(chalk.yellow(`\n⚠️  ${failedFiles.length} files failed:`));
+        for (const failed of failedFiles) {
+          const rateLimitTag = failed.isRateLimited ? chalk.red(' [rate-limited]') : '';
+          console.log(chalk.gray(`   - ${failed.path}${rateLimitTag}`));
+        }
+        console.log(chalk.yellow('\n   Re-run the update command to retry failed files.'));
+      }
+
+      console.log(chalk.gray(`\n📝 Manifest saved to ${manifestPath}\n`));
     }
-  }
-
-  // Display summary
-  if (quiet) {
-    // Minimal output for hooks
-    console.log(chalk.green(`✅ Docs updated: ${filesToProcess.length} files, ${totalTokens.toLocaleString()} tokens, $${((totalTokens / 1_000_000) * 3).toFixed(2)}`));
-  } else {
-    // Full output for manual runs
-    console.log(chalk.green('\n✅ Documentation updated!\n'));
-    console.log(chalk.bold('Statistics:'));
-    console.log(`  Files processed: ${filesToProcess.length}`);
-    console.log(`  Tokens used: ${totalTokens.toLocaleString()}`);
-    console.log(`  Total tokens (all time): ${updatedManifest.stats.totalTokensUsed.toLocaleString()}`);
-    console.log(`  Estimated cost this run: $${((totalTokens / 1_000_000) * 3).toFixed(2)}`);
-    console.log(`  Total cost (all time): $${updatedManifest.stats.totalCost.toFixed(2)}`);
-
-    if (changes.unchanged.length > 0) {
-      const savedTokens = changes.unchanged.length * 1000; // Rough estimate
-      const savedCost = (savedTokens / 1_000_000) * 3;
-      console.log(
-        chalk.green(`  💡 Saved ~$${savedCost.toFixed(2)} by skipping ${changes.unchanged.length} unchanged files!`)
-      );
-    }
-
-    console.log(chalk.gray(`\n📝 Manifest saved to ${manifestPath}\n`));
+  } finally {
+    // ========== RELEASE LOCK ==========
+    removeCleanupHandler();
+    releaseLock(lockPath);
   }
 }

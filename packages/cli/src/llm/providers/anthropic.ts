@@ -1,6 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
+import {
+  RateLimitError as AnthropicRateLimitError,
+  APIError as AnthropicAPIError,
+} from '@anthropic-ai/sdk';
 import { Summary } from '../../types/index.js';
 import { computeContentHash } from '../../core/hash.js';
+import { RateLimitError, ApiError } from '../errors.js';
 
 export class AnthropicProvider {
   private client: Anthropic;
@@ -56,6 +61,26 @@ export class AnthropicProvider {
         ...(derivedFrom && { derivedFrom }),
       };
     } catch (error) {
+      // Handle Anthropic-specific errors
+      if (error instanceof AnthropicRateLimitError) {
+        // Extract retry-after header if available
+        const retryAfter = this.extractRetryAfter(error);
+        throw new RateLimitError(
+          `Rate limit exceeded: ${error.message}`,
+          retryAfter
+        );
+      }
+
+      if (error instanceof AnthropicAPIError) {
+        const statusCode = error.status ?? 500;
+        const isRetryable = statusCode >= 500 || statusCode === 408;
+        throw new ApiError(
+          `API error: ${error.message}`,
+          statusCode,
+          isRetryable
+        );
+      }
+
       throw new Error(`Failed to generate summary: ${error}`);
     }
   }
@@ -65,5 +90,23 @@ export class AnthropicProvider {
    */
   async generateSummaries(prompts: string[]): Promise<Summary[]> {
     return Promise.all(prompts.map(prompt => this.generateSummary(prompt)));
+  }
+
+  /**
+   * Extracts retry-after header from Anthropic error if available
+   */
+  private extractRetryAfter(error: AnthropicRateLimitError): number | undefined {
+    // Anthropic SDK exposes headers on the error object
+    const headers = error.headers;
+    if (headers) {
+      const retryAfter = headers['retry-after'];
+      if (retryAfter) {
+        const parsed = parseInt(retryAfter, 10);
+        if (!isNaN(parsed)) {
+          return parsed;
+        }
+      }
+    }
+    return undefined;
   }
 }
