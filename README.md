@@ -614,11 +614,7 @@ node dist/index.js init
 ## Future Enhancements
 
 - **Confluence Integration**: Auto-publish docs to Confluence
-- **Smart Context**: Include related files in analysis (imports, dependencies)
-- **Custom Audiences**: Define your own audience types beyond Engineering/Product/Executive
 - **Git Integration**: Track documentation changes across git history
-- **Additional Embedding Providers**: Voyage AI, local models (Ollama)
-- **Watch Mode**: Automatically regenerate docs when files change
 - **CI/CD Integration**: GitHub Actions workflow for automated documentation updates
 
 
