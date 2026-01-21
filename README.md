@@ -14,6 +14,10 @@ An intelligent documentation system that uses Merkle trees and LLMs to automatic
 - **No Circular Dependencies**: Documentation lives in your repo without triggering infinite regeneration loops
 - **MCP Server**: Expose documentation to LLMs via Model Context Protocol for AI-assisted development
 - **Semantic Search** (optional): Query documentation by concept using vector embeddings with LanceDB
+- **Directory Summaries**: Automatically generate aggregated documentation for entire directories
+- **Crash Recovery**: Staging mechanism preserves progress if the process is interrupted
+- **Retry with Backoff**: Automatic retries for transient API failures with exponential backoff
+- **VS Code Extension**: Browse and view documentation directly in your IDE
 
 ## Architecture
 
@@ -48,6 +52,73 @@ The tool computes a "code hash" that **excludes** the `.docs/` directory. This m
 - Documentation can live in your repository (`.docs/manifest.json`)
 - Updating docs doesn't trigger re-hashing
 - No infinite regeneration loops
+
+## Reliability Features
+
+The tool includes several mechanisms to ensure reliable documentation generation, especially for large codebases.
+
+### Retry Logic with Exponential Backoff
+
+All LLM API calls are wrapped with automatic retry logic to handle transient failures:
+
+- **Exponential backoff**: Starts at 1 second, doubles each retry, caps at 60 seconds
+- **Jitter**: Adds 10% random variation to prevent thundering herd problems
+- **Smart retries**: Only retries on recoverable errors (rate limits, server errors, timeouts)
+- **Rate limit awareness**: Honors `retry-after` headers from the API for precise timing
+- **Configurable**: Default 3 retries, customizable via code
+
+### Error Handling
+
+Custom error classification ensures appropriate handling:
+
+| Error Type | Status Codes | Behavior |
+|------------|--------------|----------|
+| Rate Limit | 429 | Retry with backoff, honor retry-after header |
+| Server Error | 5xx | Retry with backoff |
+| Timeout | 408 | Retry with backoff |
+| Client Error | 4xx (except 408, 429) | Fail immediately (not retryable) |
+
+Failed files are tracked in staging with retry counts and error details for manual review.
+
+### Staging Mechanism
+
+Progress is tracked incrementally in `.docs/staging.json`:
+
+- **Crash recovery**: If the process is interrupted, resume from where you left off
+- **Completed tracking**: Successfully processed files are saved immediately
+- **Failed tracking**: Errors are recorded with retry counts and rate-limit status
+- **Stale detection**: Automatically detects if code changed since staging was created
+- **Atomic writes**: Uses temp file + rename pattern to prevent corruption
+
+### Locking Mechanism
+
+Prevents concurrent documentation updates via `.docs/.update.lock`:
+
+- **Process tracking**: Stores PID, hostname, and start time
+- **Stale lock detection**: Checks if the locking process is still running
+- **Auto-cleanup**: Releases lock on process exit, SIGINT, or SIGTERM
+- **Clear error messages**: Tells you which process holds the lock if blocked
+
+### Incremental Bundling
+
+Large codebases are processed in batches to minimize data loss and memory usage:
+
+- **Batch size**: Every 5 files (configurable via `bundleThreshold` in config), progress is saved to the manifest
+- **Memory efficient**: Doesn't hold entire documentation set in memory during long runs
+- **Crash resilient**: Loses at most one batch of work if the process crashes
+- **Automatic merging**: Completed work is merged from staging into the manifest periodically
+
+**How it works:**
+
+1. Files are processed one at a time with retry logic
+2. Successfully processed files accumulate in staging
+3. When the threshold is reached (default: 5 files):
+   - Staging is merged into the manifest
+   - Manifest is saved to disk
+   - Staging is cleared (failed entries preserved)
+4. After all files complete, any remaining staged work is merged
+
+This means a 1000-file codebase saves progress 200 times during processing, not just once at the end.
 
 ## Installation
 
@@ -324,17 +395,19 @@ Once connected, an LLM can ask:
 - "Show me the documentation for src/utils/validators.ts" → `get_file_doc`
 - "List all documented files in the components folder" → `list_files`
 
-## VS Code Extension (Phase 2)
+## VS Code Extension
 
 View documentation directly in your IDE while browsing and editing code.
 
 ### Features
 
-- **📚 Documentation Sidebar**: Browse all documented files in a tree view
-- **📖 Quick Documentation Panel**: View full documentation side-by-side with code
-- **⌨️ Keyboard Shortcut**: Open docs with `Ctrl+Shift+D` (or `Cmd+Shift+D` on Mac)
-- **🔄 Auto-Refresh**: Automatically reload when documentation is updated
-- **🔁 CLI Integration**: Run updates from the IDE terminal
+- **Documentation Sidebar**: Browse all documented files and directories in a hierarchical tree view
+- **Directory Summaries**: View aggregated documentation for entire directories, not just individual files
+- **Quick Documentation Panel**: View full documentation side-by-side with code
+- **Keyboard Shortcut**: Open docs with `Ctrl+Shift+D` (or `Cmd+Shift+D` on Mac)
+- **Live Reload**: File watcher automatically refreshes when `.docs/manifest.json` changes
+- **Multi-Audience Views**: Switch between Engineering, Product, and Executive documentation
+- **CLI Integration**: Run `codebase-docs update` directly from the IDE terminal
 
 ### Getting Started
 
@@ -352,14 +425,25 @@ code --extensionDevelopmentPath=packages/vscode-extension /path/to/your/project
 
 3. **View documentation**:
    - Look for "Documentation" in the Explorer sidebar
-   - Click any file to view its documentation
+   - Click any file or directory to view its documentation
    - Press `Ctrl+Shift+D` to show docs for the current file
 
 ### Commands
 
-- **Show Documentation** (`Ctrl+Shift+D`): View docs for the file you're editing
-- **Refresh Documentation**: Run `codebase-docs update` from IDE
-- **Show in Sidebar**: Reveal current file in documentation tree
+| Command | Shortcut | Description |
+|---------|----------|-------------|
+| Show Documentation | `Ctrl+Shift+D` / `Cmd+Shift+D` | View docs for the file you're editing |
+| Refresh Documentation | - | Reload documentation from manifest |
+| Show in Sidebar | - | Reveal current file in documentation tree |
+
+### Architecture
+
+The extension consists of several components:
+
+- **Manifest Reader**: Loads and watches `.docs/manifest.json` for changes
+- **Tree Provider**: Renders the hierarchical documentation structure in the sidebar
+- **Webview Provider**: Displays formatted documentation in a panel
+- **Command Handlers**: Integrates with VS Code's command palette
 
 For detailed instructions, see [VS Code Extension README](packages/vscode-extension/README.md).
 
@@ -530,11 +614,12 @@ node dist/index.js init
 ## Future Enhancements
 
 - **Confluence Integration**: Auto-publish docs to Confluence
-- **Directory Summaries**: Summarize entire directories, not just files
-- **Smart Context**: Include related files in analysis (imports, etc.)
-- **Custom Audiences**: Define your own audience types
-- **Git Integration**: Track docs across git history
-- **Additional Embedding Providers**: Voyage AI, local models
+- **Smart Context**: Include related files in analysis (imports, dependencies)
+- **Custom Audiences**: Define your own audience types beyond Engineering/Product/Executive
+- **Git Integration**: Track documentation changes across git history
+- **Additional Embedding Providers**: Voyage AI, local models (Ollama)
+- **Watch Mode**: Automatically regenerate docs when files change
+- **CI/CD Integration**: GitHub Actions workflow for automated documentation updates
 
 
 ## License
