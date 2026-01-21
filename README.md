@@ -1,6 +1,6 @@
 # Codebase Documentation Tool
 
-An intelligent documentation system that uses Merkle trees and LLMs to automatically generate and maintain code documentation. Only regenerates documentation for files that have changed, minimizing costs and time. Includes a VS Code extention used to explore the documentation.
+An intelligent documentation system that uses Merkle trees and LLMs to automatically generate and maintain code documentation. Only regenerates documentation for files that have changed, minimizing costs and time. This project includes a VS Code extention used to explore the documentation.
 
 ## Features
 
