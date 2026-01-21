@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import chalk from 'chalk';
 import ora from 'ora';
 import { loadConfig } from '../core/config.js';
-import { buildCodeMerkleTree, getFileNodes } from '../core/merkle-tree.js';
+import { buildCodeMerkleTree, getFileNodes, getDirectoryNodes, sortByDepth } from '../core/merkle-tree.js';
 import {
   loadManifest,
   detectChanges,
@@ -319,6 +319,132 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean;
       }
     }
 
+    // ========== DIRECTORY PROCESSING ==========
+    // Process directories bottom-up (deepest first) so children are always documented before parents
+    if (!rateLimitHit) {
+      const allDirectories = getDirectoryNodes(currentTree);
+      // Exclude root "." and filter to directories with documented children
+      const directoriesToProcess = sortByDepth(
+        allDirectories.filter(dir => {
+          if (dir.path === '.') return false;
+          // Check if any child has summaries
+          const hasDocumentedChildren = (dir.children || []).some(childPath => {
+            const child = currentTree[childPath];
+            return child?.summaries?.engineering;
+          });
+          if (!hasDocumentedChildren) return false;
+
+          // Check if directory needs updating:
+          // 1. Directory doesn't have summaries yet
+          // 2. Directory's childrenHash changed from manifest
+          const manifestNode = manifest.nodes[dir.path];
+          const needsUpdate =
+            !dir.summaries?.engineering ||
+            !manifestNode ||
+            manifestNode.childrenHash !== dir.childrenHash;
+          return needsUpdate;
+        }),
+        true // deepest first
+      );
+
+      if (directoriesToProcess.length > 0 && !quiet) {
+        console.log(chalk.blue(`\n📁 Processing ${directoriesToProcess.length} directories...`));
+      }
+
+      let dirProcessedCount = 0;
+      for (const dirNode of directoriesToProcess) {
+        dirProcessedCount++;
+        const prefix = `[${dirProcessedCount}/${directoriesToProcess.length}]`;
+
+        const dirSpinner = quiet ? null : ora(`${prefix} ${chalk.cyan('dir')} ${dirNode.path}`).start();
+
+        try {
+          // Use retry logic for API calls
+          const summaries = await withRetry(
+            () => summarizer.generateDirectorySummary(dirNode, currentTree),
+            { maxRetries: 3, initialDelayMs: 1000 }
+          );
+
+          // Skip if no summaries generated (e.g., no children with summaries)
+          if (!summaries.engineering) {
+            if (dirSpinner) {
+              dirSpinner.info(`${prefix} ${chalk.cyan('dir')} ${dirNode.path} ${chalk.gray('(skipped - no children summaries)')}`);
+            }
+            continue;
+          }
+
+          dirNode.summaries = summaries;
+          dirNode.lastAnalyzed = new Date().toISOString();
+
+          // Calculate tokens used
+          const nodeTokens = Object.values(summaries).reduce(
+            (sum, summary) => sum + (summary?.tokens || 0),
+            0
+          );
+          totalTokens += nodeTokens;
+
+          // Add to staging
+          staging = addCompletedEntry(
+            staging,
+            dirNode.path,
+            dirNode.childrenHash || '',
+            summaries,
+            nodeTokens
+          );
+          saveStaging(stagingPath, staging);
+          pendingCount++;
+
+          if (dirSpinner) {
+            dirSpinner.succeed(
+              `${prefix} ${chalk.cyan('dir')} ${dirNode.path} ${chalk.gray(`(${nodeTokens} tokens)`)}`
+            );
+          }
+
+          // Periodic bundle every N items
+          if (pendingCount >= bundleThreshold) {
+            if (!quiet) {
+              console.log(chalk.gray(`   💾 Bundling ${pendingCount} items into manifest...`));
+            }
+
+            manifest = mergeStaging(manifest, currentTree, staging);
+            manifest.stats = calculateStats(currentTree);
+            saveManifest(manifestPath, manifest);
+
+            // Reset staging (keep failed entries)
+            const failedEntries = staging.failed;
+            staging = createStaging(rootHash);
+            staging.failed = failedEntries;
+            saveStaging(stagingPath, staging);
+            pendingCount = 0;
+          }
+        } catch (error) {
+          if (dirSpinner) {
+            dirSpinner.fail(`${prefix} ${chalk.cyan('dir')} ${dirNode.path} - ${chalk.red('Error')}`);
+          }
+
+          const isRateLimited = error instanceof RateLimitError;
+
+          staging = addFailedEntry(
+            staging,
+            dirNode.path,
+            dirNode.childrenHash || '',
+            error instanceof Error ? error.message : String(error),
+            1,
+            isRateLimited
+          );
+          saveStaging(stagingPath, staging);
+
+          if (isRateLimited) {
+            rateLimitHit = true;
+            console.error(chalk.yellow(`\n⚠️  Rate limit hit. Progress saved. Re-run to continue.`));
+            break;
+          } else {
+            console.error(chalk.red(`❌ Error processing directory ${dirNode.path}: ${error}`));
+          }
+        }
+      }
+    }
+
     // ========== FINAL BUNDLE ==========
     if (staging.completed.length > 0) {
       if (!quiet) {
@@ -334,8 +460,12 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean;
       clearStaging(stagingPath);
     }
 
-    // Generate embeddings if enabled (only for successfully processed files)
-    const successfulNodes = filesToProcess.filter(node => node.summaries);
+    // Generate embeddings if enabled (for successfully processed files and directories)
+    const successfulFileNodes = filesToProcess.filter(node => node.summaries);
+    const successfulDirNodes = getDirectoryNodes(currentTree).filter(
+      node => node.path !== '.' && node.summaries?.engineering
+    );
+    const successfulNodes = [...successfulFileNodes, ...successfulDirNodes];
 
     if (config.embeddings?.enabled && successfulNodes.length > 0) {
       if (!quiet) {
@@ -352,6 +482,9 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean;
         let embeddingTokens = 0;
 
         for (const node of successfulNodes) {
+          // Use fileHash for files, childrenHash for directories
+          const nodeHash = node.type === 'file' ? (node.fileHash || '') : (node.childrenHash || '');
+
           if (node.summaries?.engineering) {
             const embedding = await embeddingProvider.embed(node.summaries.engineering.content);
             embeddingTokens += embedding.tokens;
@@ -362,7 +495,7 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean;
               path: node.path,
               content: node.summaries.engineering.content,
               audience: 'engineering',
-              fileHash: node.fileHash || '',
+              fileHash: nodeHash,
               embeddedAt: new Date().toISOString(),
             });
           }
@@ -377,7 +510,7 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean;
               path: node.path,
               content: node.summaries.product.content,
               audience: 'product',
-              fileHash: node.fileHash || '',
+              fileHash: nodeHash,
               embeddedAt: new Date().toISOString(),
             });
           }
@@ -392,7 +525,7 @@ export async function updateCommand(options: { force?: boolean; quiet?: boolean;
               path: node.path,
               content: node.summaries.executive.content,
               audience: 'executive',
-              fileHash: node.fileHash || '',
+              fileHash: nodeHash,
               embeddedAt: new Date().toISOString(),
             });
           }

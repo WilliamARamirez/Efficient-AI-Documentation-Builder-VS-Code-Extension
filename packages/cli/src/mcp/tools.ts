@@ -90,6 +90,24 @@ export function getFileDoc(
 
   if (node.type === 'directory') {
     const children = node.children || [];
+    const audience = input.audience || 'engineering';
+    const summary = node.summaries?.[audience];
+
+    if (summary) {
+      // Directory has a summary - display it like we do for files
+      return (
+        `# ${input.path} (directory)\n\n` +
+        `**Audience:** ${audience}\n` +
+        `**Last Updated:** ${summary.generatedAt}\n` +
+        `**Model:** ${summary.model}\n\n` +
+        `${summary.content}\n\n` +
+        `---\n\n` +
+        `**Contains ${children.length} items:**\n` +
+        children.map((c) => `  - ${c}`).join('\n')
+      );
+    }
+
+    // No summary available - show children list
     return (
       `# ${input.path} (directory)\n\n` +
       `Contains ${children.length} items:\n` +

@@ -5,6 +5,7 @@ import {
   getEngineeringPrompt,
   getProductPrompt,
   getExecutivePrompt,
+  getDirectorySummaryPrompt,
 } from './prompts.js';
 
 export class Summarizer {
@@ -59,6 +60,80 @@ export class Summarizer {
       const engineeringPrompt = getEngineeringPrompt(node.path, fileContent);
 
       summaries.engineering = await this.provider.generateSummary(engineeringPrompt);
+    }
+
+    // Stage 2: Derive other summaries from engineering summary
+    if (summaries.engineering) {
+      const derivedPromises: Promise<void>[] = [];
+
+      if (this.enabledAudiences.has('product')) {
+        derivedPromises.push(
+          (async () => {
+            const productPrompt = getProductPrompt(summaries.engineering!.content);
+            summaries.product = await this.provider.generateSummary(
+              productPrompt,
+              'engineering'
+            );
+          })()
+        );
+      }
+
+      if (this.enabledAudiences.has('executive')) {
+        derivedPromises.push(
+          (async () => {
+            const executivePrompt = getExecutivePrompt(summaries.engineering!.content);
+            summaries.executive = await this.provider.generateSummary(
+              executivePrompt,
+              'engineering'
+            );
+          })()
+        );
+      }
+
+      // Run derived summaries in parallel
+      await Promise.all(derivedPromises);
+    }
+
+    return summaries;
+  }
+
+  /**
+   * Two-stage summarization for a directory node:
+   * Stage 1: Generate engineering summary from children summaries
+   * Stage 2: Derive product and executive summaries from engineering summary
+   */
+  async generateDirectorySummary(
+    node: MerkleNode,
+    tree: Record<string, MerkleNode>
+  ): Promise<Summaries> {
+    const summaries: Summaries = {};
+
+    // Only process directory nodes
+    if (node.type !== 'directory') {
+      return summaries;
+    }
+
+    // Collect engineering summaries from direct children
+    const childrenSummaries: string[] = [];
+    for (const childPath of node.children || []) {
+      const childNode = tree[childPath];
+      if (childNode?.summaries?.engineering?.content) {
+        const prefix = childNode.type === 'directory' ? '[dir]' : '[file]';
+        childrenSummaries.push(
+          `${prefix} ${childPath}: ${childNode.summaries.engineering.content}`
+        );
+      }
+    }
+
+    // Skip if no children have summaries
+    if (childrenSummaries.length === 0) {
+      return summaries;
+    }
+
+    // Stage 1: Generate engineering summary from children
+    if (this.enabledAudiences.has('engineering')) {
+      const dirPrompt = getDirectorySummaryPrompt(node.path, childrenSummaries);
+      summaries.engineering = await this.provider.generateSummary(dirPrompt);
     }
 
     // Stage 2: Derive other summaries from engineering summary

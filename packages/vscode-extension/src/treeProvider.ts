@@ -49,7 +49,7 @@ export class DocumentationTreeProvider implements vscode.TreeDataProvider<DocTre
           path: childPath,
           name: name,
           type: node.type,
-          hasDocumentation: node.type === 'file' && !!node.summaries?.engineering,
+          hasDocumentation: !!node.summaries?.engineering,
         };
       })
       .filter((item): item is DocTreeItem => item !== null)
@@ -82,10 +82,19 @@ export class DocumentationTreeProvider implements vscode.TreeDataProvider<DocTre
         arguments: [element.path],
       };
     } else {
-      treeItem.iconPath = new vscode.ThemeIcon('folder');
+      // Use folder-library icon for directories with documentation
+      treeItem.iconPath = new vscode.ThemeIcon(element.hasDocumentation ? 'folder-library' : 'folder');
+      // Allow clicking directories with documentation to view their summary
+      if (element.hasDocumentation) {
+        treeItem.command = {
+          command: 'codebase-docs.showDocumentation',
+          title: 'Show Documentation',
+          arguments: [element.path],
+        };
+      }
     }
 
-    treeItem.tooltip = element.path;
+    treeItem.tooltip = element.hasDocumentation ? `${element.path} (documented)` : element.path;
     treeItem.contextValue = element.type;
 
     return treeItem;

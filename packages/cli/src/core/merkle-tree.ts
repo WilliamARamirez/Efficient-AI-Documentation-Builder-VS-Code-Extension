@@ -183,3 +183,24 @@ export function getFileNodes(tree: Record<string, MerkleNode>): MerkleNode[] {
 export function getDirectoryNodes(tree: Record<string, MerkleNode>): MerkleNode[] {
   return Object.values(tree).filter(node => node.type === 'directory');
 }
+
+/**
+ * Calculates the depth of a path (number of directory levels)
+ */
+function getPathDepth(path: string): number {
+  if (path === '.') return 0;
+  return path.split('/').length;
+}
+
+/**
+ * Sorts nodes by their path depth
+ * @param nodes - Array of MerkleNodes to sort
+ * @param deepestFirst - If true (default), deepest paths come first; if false, shallowest first
+ */
+export function sortByDepth(nodes: MerkleNode[], deepestFirst: boolean = true): MerkleNode[] {
+  return [...nodes].sort((a, b) => {
+    const depthA = getPathDepth(a.path);
+    const depthB = getPathDepth(b.path);
+    return deepestFirst ? depthB - depthA : depthA - depthB;
+  });
+}

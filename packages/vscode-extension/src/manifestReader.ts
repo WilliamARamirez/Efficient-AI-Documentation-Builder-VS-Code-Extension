@@ -112,7 +112,23 @@ export class ManifestReader {
   }
 
   /**
-   * Gets all documented file paths
+   * Gets all documented paths (files and directories with summaries)
+   */
+  getDocumentedPaths(): string[] {
+    if (!this.manifest) {
+      return [];
+    }
+
+    return Object.keys(this.manifest.nodes)
+      .filter(nodePath => {
+        const node = this.manifest!.nodes[nodePath];
+        return !!node.summaries?.engineering;
+      });
+  }
+
+  /**
+   * Gets all documented file paths (excludes directories)
+   * @deprecated Use getDocumentedPaths() instead
    */
   getDocumentedFiles(): string[] {
     if (!this.manifest) {
@@ -120,8 +136,8 @@ export class ManifestReader {
     }
 
     return Object.keys(this.manifest.nodes)
-      .filter(path => {
-        const node = this.manifest!.nodes[path];
+      .filter(nodePath => {
+        const node = this.manifest!.nodes[nodePath];
         return node.type === 'file' && node.summaries?.engineering;
       });
   }
