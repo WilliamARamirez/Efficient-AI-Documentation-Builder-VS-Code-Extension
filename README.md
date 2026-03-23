@@ -622,6 +622,4 @@ node dist/index.js init
 
 MIT
 
-## Author
 
-Built as a portfolio project demonstrating deep technical skills and practical system design.
